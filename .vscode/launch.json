@@ -1,0 +1,51 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            // Debug standard (senza setuid efficace)
+            "name": "(gdb) Launch (no setuid)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "/home/iacme/Desktop/fermate/main",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "/home/iacme/Desktop/fermate",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                },
+                {
+                    "description": "Set Disassembly Flavor to Intel",
+                    "text": "-gdb-set disassembly-flavor intel",
+                    "ignoreFailures": true
+                }
+            ]
+        },
+        {
+            // Config per attaccarsi a un processo già avviato con setuid attivo
+            "name": "(gdb) Attach to running setuid",
+            "type": "cppdbg",
+            "request": "attach",
+            "program": "/home/iacme/Desktop/fermate/main",
+            "processId": "${command:pickProcess}",
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                },
+                {
+                    "description": "Set Disassembly Flavor to Intel",
+                    "text": "-gdb-set disassembly-flavor intel",
+                    "ignoreFailures": true
+                }
+            ]
+        }
+    ]
+}
