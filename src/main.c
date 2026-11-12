@@ -1,142 +1,254 @@
 #include "fermate.h"
-
-volatile int g_fd_keyboard = -1;
-volatile int g_max_block_time = 0;
-
-static void read_from_event(struct input_event *ev)
+#include "xkb.h"
+#include <errno.h>
+#include <limits.h>
+#include <poll.h>
+#include <signal.h>
+#include <sys/timerfd.h>
+#include <unistd.h>
+static volatile sig_atomic_t g_stopped;
+static const char *color(FILE *stream, const char *code)
 {
-    ssize_t byte_read = read(g_fd_keyboard, ev, sizeof(struct input_event));
-    if (byte_read == -1)
-    {
-        PERROR("read");
-        exit(EXIT_FAILURE);
-    }
-    if (byte_read != sizeof(struct input_event))
-    {
-        printf("ho letto una size sbaglaita\n");
-        exit(EXIT_FAILURE);
-    }
+    return isatty(fileno(stream)) && !getenv("NO_COLOR") ? code : "";
 }
-
-void hexdump(const void *data, size_t size) {
-    const unsigned char *p = (const unsigned char *)data;
-    size_t i, j;
-
-    for (i = 0; i < size; i += 16) {
-        // stampa offset
-        printf("%08zx  ", i);
-
-        // stampa i byte in esadecimale
-        for (j = 0; j < 16; j++) {
-            if (i + j < size)
-                printf("%02x ", p[i + j]);
-            else
-                printf("   ");
-            if (j == 7) printf(" "); // spaziatura extra a metà riga
-        }
-
-        printf(" |");
-
-        // stampa in ASCII i caratteri stampabili
-        for (j = 0; j < 16 && i + j < size; j++) {
-            unsigned char c = p[i + j];
-            printf("%c", isprint(c) ? c : '.');
-        }
-
-        printf("|\n");
-    }
-}
-
-bool get_next_character(XkbEnv *env, char utf8[4])
+#define CYAN "\033[1;36m"
+#define GREEN "\033[1;32m"
+#define YELLOW "\033[1;33m"
+#define RED "\033[1;31m"
+#define RESET "\033[0m"
+static void show_prompt(const char *buffer)
 {
-    struct input_event ev;
-
-    read_from_event(&ev);
-
-    if (ev.type == EV_KEY) 
-    {
-        xkb_keycode_t kc = xkb_update_from_evdev(env, ev.code, ev.value);
-        xkb_keysym_t sym;
-        if (xkb_ev_to_utf8(env, kc, ev.value, utf8, 4, &sym))
-            return (true);
-    }
-    utf8[0] = '\0'; // if is not an key_event or is key_realese
-    return (false);
+    if (isatty(STDOUT_FILENO))
+        printf("\r\033[2K");
+    printf("%s> %s%s", color(stdout, CYAN), color(stdout, RESET), buffer);
+    fflush(stdout);
 }
-
-static inline void init(XkbEnv *env)
+static void stop(int signo)
 {
-	setlocale(LC_CTYPE, "");
-	xkb_env_init_from_rmlvo(env, "pc105", "it", NULL, NULL);
-	xkb_env_enable_compose(env, NULL);
+    (void)signo;
+    g_stopped = 1;
 }
-
-
-void update_user_buffer(char user_buf[USR_BUF_SIZE], size_t *buf_len, char utf8[4])
+static int handle_key(struct device *device, XkbEnv *env, const struct input_event *event,
+                      char *buffer, size_t *length, const char *target, int timer)
 {
-    if (*utf8 == '\b')
+    if (event->type == EV_SYN && event->code == SYN_DROPPED)
+        return (-1);
+    if (event->type != EV_KEY || event->value < 0 || event->value > 2)
+        return (0);
+    if (!device->state)
     {
-        if (*buf_len == 0)
-            return ;
-        for (int32_t i = 0; i < 4; ++i)
+        device->state = xkb_state_new(env->keymap);
+        if (!device->state)
+            return (-1);
+        if (env->compose_table)
         {
-            bool exit = !(user_buf[*buf_len - 1] & 0x80);
-            user_buf[*buf_len - 1] = '\0';
-            *buf_len -= 1;
-            if (exit)
-                return ;
+            device->compose = xkb_compose_state_new(env->compose_table, XKB_COMPOSE_STATE_NO_FLAGS);
+            if (!device->compose)
+                return (-1);
         }
-        write(STDOUT_FILENO, "\b \b", 3);
     }
-    strcat(user_buf + *buf_len, utf8);
-    *buf_len += strlen(utf8);
-}
-
-void loop()
-{
-    XkbEnv env;
-    char *target = EMERGENCY_EXIT;
-    char user_buf[USR_BUF_SIZE];
-    char utf8[4];
-    size_t buf_len = 0;
-
-    *user_buf = '\0';
-    init(&env);
-    while (true)
+    XkbEnv local = *env;
+    local.state = device->state;
+    local.compose_state = device->compose;
+    xkb_keycode_t code = event->code + 8;
+    if (event->value != 2)
+        xkb_state_update_key(local.state, code, event->value ? XKB_KEY_DOWN : XKB_KEY_UP);
+    char text[64];
+    xkb_keysym_t symbol;
+    if (!xkb_ev_to_utf8(&local, code, event->value, text, sizeof(text), &symbol))
+        return (0);
+    if (*text == '\r' || *text == '\n')
     {
-        if (get_next_character(&env, utf8))
+        putchar('\n');
+        bool unlock = target && !strcmp(buffer, target);
+#ifdef ENABLE_EMERGENCY_EXIT
+        unlock = unlock || !strcmp(buffer, EMERGENCY_EXIT);
+#endif
+        if (unlock)
         {
-            // hexdump(utf8, 4);
-            if (*utf8 == '\r')
-            {
-                if (strcmp(user_buf, target) == 0)
-                    return ;
-                else
-                {
-                    buf_len = 0;
-                    *user_buf = '\0';
-                }
-            }
-            else
-                update_user_buffer(user_buf, &buf_len, utf8);
+            fflush(stdout);
+            return (1);
         }
-        if (*utf8 == 'm')
-            printf("BUFFER : '%s'\n", user_buf);
+        if (!strcmp(buffer, "status"))
+        {
+            struct itimerspec remaining;
+            if (timerfd_gettime(timer, &remaining) < 0)
+                return (-1);
+            long long seconds = (long long)remaining.it_value.tv_sec +
+                                (remaining.it_value.tv_nsec > 0);
+            printf("%sTime remaining: %lld seconds.%s\n",
+                   color(stdout, CYAN), seconds, color(stdout, RESET));
+        }
+        else
+            printf("%sIncorrect input. Try again, or type status and press Enter.%s\n",
+                   color(stdout, RED), color(stdout, RESET));
+        *length = 0;
+        buffer[0] = '\0';
     }
-}
-
-
-int	main(int ac, char *av[])
-{
-    // sleep to not bug the terminal
-    usleep(100000);
-    get_max_block_time(ac, av);
-    block_all_device_and_set_fd_keyboard();
-    launch_thread_for_continuing_blocking();
-
-    loop();
-    printf(CYN "complimenti\n" RES);
-    handle_fds(A_EXIT, 0);
-
+    else
+    {
+        /* Ignore terminal control characters except Backspace. */
+        if ((unsigned char)*text < 32 && *text != '\b')
+            return (0);
+        if (!update_user_buffer(buffer, length, USR_BUF_SIZE, text))
+        {
+            *length = 0;
+            buffer[0] = '\0';
+            fprintf(stderr, "\n%sInput too long. Line cleared.%s\n",
+                    color(stderr, RED), color(stderr, RESET));
+        }
+    }
+    show_prompt(buffer);
     return (0);
+}
+int main(int argc, char **argv)
+{
+    sleep(1);
+    int duration = DEFAULT_BLOCK_TIME;
+    if (argc == 2 && !strcmp(argv[1], "--help"))
+    {
+        puts("Usage: fermate [seconds] [--challenge]\nDefault: 300 seconds. Type status and press Enter to check the remaining time.\n--challenge enables a random string for early unlock.\nLayout: XKB_DEFAULT_LAYOUT (default: it).");
+#ifdef ENABLE_EMERGENCY_EXIT
+        puts("Test build: type exit and press Enter to unlock early.");
+#endif
+        return (EXIT_SUCCESS);
+    }
+    bool challenge = argc == 3 && !strcmp(argv[2], "--challenge");
+    if (argc > 3 || (argc == 3 && !challenge) || (argc > 1 && !parse_duration(argv[1], &duration)))
+    {
+        fprintf(stderr, "%sUsage: fermate [positive seconds] [--challenge]%s\n",
+                color(stderr, RED), color(stderr, RESET));
+        return (EXIT_FAILURE);
+    }
+    struct sigaction action = {.sa_handler = stop};
+    sigemptyset(&action.sa_mask);
+    if (sigaction(SIGINT, &action, NULL) || sigaction(SIGTERM, &action, NULL) || sigaction(SIGHUP, &action, NULL))
+    {
+        perror("sigaction");
+        return (EXIT_FAILURE);
+    }
+    XkbEnv env = {0};
+    struct devices devices = {0};
+    int watcher = -1;
+    int timer = -1;
+    int result = EXIT_FAILURE;
+    char *random = NULL;
+    struct pollfd *fds = NULL;
+    setlocale(LC_CTYPE, "");
+    const char *layout = getenv("XKB_DEFAULT_LAYOUT");
+    if (!xkb_env_init_from_rmlvo(&env, "pc105", layout ? layout : "it", NULL, NULL))
+        goto cleanup;
+    if (!xkb_env_enable_compose(&env, NULL))
+        goto cleanup;
+    if (challenge && !(random = generate_random_string(12, CH_ASCII_ALPHA | CH_ASCII_NUMBER)))
+        goto cleanup;
+    const char *target = random;
+    watcher = watch_devices();
+    if (watcher < 0)
+    {
+        perror("inotify");
+        goto cleanup;
+    }
+    timer = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+    if (timer < 0)
+    {
+        perror("timerfd_create");
+        goto cleanup;
+    }
+    struct itimerspec timeout = {.it_value = {.tv_sec = duration}};
+    if (timerfd_settime(timer, 0, &timeout, NULL))
+    {
+        perror("timerfd_settime");
+        goto cleanup;
+    }
+    printf("%sLocked for %d seconds.%s\n", color(stdout, CYAN), duration, color(stdout, RESET));
+    printf("%sFERMATE%s  |  Take a break.\n", color(stdout, CYAN), color(stdout, RESET));
+    puts("Type status and press Enter to check the remaining time.");
+    if (target)
+        printf("Emergency unlock: %s%s%s + Enter.\n",
+               color(stdout, YELLOW), target, color(stdout, RESET));
+#ifdef ENABLE_EMERGENCY_EXIT
+    printf("%sTest build: type exit and press Enter to unlock early.%s\n",
+           color(stdout, YELLOW), color(stdout, RESET));
+#endif
+    show_prompt("");
+    if (scan_devices(&devices) < 0)
+        goto cleanup;
+    char buffer[USR_BUF_SIZE] = {0};
+    size_t length = 0;
+    while (!g_stopped)
+    {
+        size_t count = devices.size;
+        struct pollfd *next = (struct pollfd *)realloc(fds, (count + 2) * sizeof(*fds));
+        if (!next)
+            goto cleanup;
+        fds = next;
+        fds[0] = (struct pollfd){.fd = timer, .events = POLLIN};
+        fds[1] = (struct pollfd){.fd = watcher, .events = POLLIN};
+        for (size_t i = 0; i < count; ++i)
+            fds[i + 2] = (struct pollfd){.fd = devices.items[i].fd, .events = POLLIN};
+        int ready = poll(fds, count + 2, -1);
+        if (ready < 0)
+        {
+            if (errno == EINTR)
+                continue;
+            perror("poll");
+            goto cleanup;
+        }
+        if (fds[0].revents & POLLIN)
+            break;
+        if (fds[0].revents & (POLLERR | POLLNVAL) || fds[1].revents & (POLLERR | POLLHUP | POLLNVAL))
+            goto cleanup;
+        /* Reverse order keeps indexes stable when removal swaps the last entry. */
+        for (size_t i = count; i-- > 0;)
+        {
+            if (g_stopped)
+                break;
+            short events = fds[i + 2].revents;
+            if (events & (POLLHUP | POLLERR | POLLNVAL))
+            {
+                remove_device(&devices, i);
+                continue;
+            }
+            if (!(events & POLLIN))
+                continue;
+            struct input_event input;
+            ssize_t bytes = read(devices.items[i].fd, &input, sizeof(input));
+            if (bytes < 0 && (errno == EAGAIN || errno == EINTR))
+                continue;
+            if (bytes < 0 && errno == ENODEV)
+            {
+                remove_device(&devices, i);
+                continue;
+            }
+            if (bytes != sizeof(input))
+                goto cleanup;
+            if (devices.items[i].keyboard)
+            {
+                int outcome = handle_key(&devices.items[i], &env, &input, buffer, &length, target, timer);
+                if (outcome < 0)
+                    goto cleanup;
+                if (outcome > 0)
+                    g_stopped = 1;
+            }
+        }
+        if (!g_stopped && fds[1].revents & POLLIN)
+            if (refresh_devices(watcher, &devices) < 0)
+                goto cleanup;
+    }
+    result = EXIT_SUCCESS;
+cleanup:
+    release_devices(&devices);
+    if (watcher >= 0)
+        close(watcher);
+    if (timer >= 0)
+        close(timer);
+    free(fds);
+    free(random);
+    xkb_env_destroy(&env);
+    fprintf(stderr, "\n%s%s%s\n",
+            color(stderr, result == EXIT_SUCCESS ? GREEN : RED),
+            result == EXIT_SUCCESS ? "Devices unlocked. You're all set." : "Error: devices released.",
+            color(stderr, RESET));
+    return (result);
 }

@@ -1,36 +1,41 @@
 #include "fermate.h"
-
-
-int32_t bit_one_count(int32_t n)
+#include <errno.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/random.h>
+char *generate_random_string(size_t length, int32_t classes)
 {
-    int32_t count = 0;
-
-    while (n)
+    char alphabet[128] = "";
+    if (classes <= 0 || (classes & ~(CH_ASCII_ALPHA | CH_ASCII_NUMBER | CH_ASCII_SYMBOL)) || length == SIZE_MAX)
     {
-        count += n & 1;
-        n >>= 1;
+        errno = EINVAL;
+        return (NULL);
     }
-    return (count);
-}
-
-// void get_random_chars(char utf8[4], int32_t ch_supported)
-// {
-//     int32_t range = bit_one_count(ch_supported);
-//     int32_t rd = rand();
-
-
-// }
-
-char *generate_random_string(size_t len, int32_t ch_supported)
-{
-    srand(time(NULL));
-
-    // max size if all are utf8 with 4 byte
-    char *rdstr = (char *)malloc(sizeof(char) * (len * 4 + 1));
-
-
-    (void)ch_supported;
-    (void)len;
-    (void)rdstr;
-    return (NULL);
+    if (classes & CH_ASCII_ALPHA)
+        strcat(alphabet, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ");
+    if (classes & CH_ASCII_NUMBER)
+        strcat(alphabet, "0123456789");
+    if (classes & CH_ASCII_SYMBOL)
+        strcat(alphabet, "!@#$%&*+-=?");
+    char *result = malloc(length + 1);
+    if (!result)
+        return NULL;
+    size_t n = strlen(alphabet);
+    unsigned limit = 256 - 256 % n;
+    for (size_t i = 0; i < length;)
+    {
+        unsigned char byte;
+        ssize_t count = getrandom(&byte, 1, 0);
+        if (count < 0 && errno == EINTR)
+            continue;
+        if (count != 1)
+        {
+            free(result);
+            return NULL;
+        }
+        if (byte < limit)
+            result[i++] = alphabet[byte % n];
+    }
+    result[length] = '\0';
+    return result;
 }

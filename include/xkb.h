@@ -1,6 +1,5 @@
-// xkb_minilib.c (metti tutto in un .c singolo o separa in .h/.c)
+// XKB helpers for keymaps, keyboard state, and compose sequences.
 
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -17,28 +16,26 @@
 #  define MAYBE_UNUSED
 #endif
 
-/* ==========================
-   Sezione: tipi e API pubblica
-   ========================== */
+/* Public types and API */
 
 typedef struct {
     struct xkb_context *ctx;
     struct xkb_keymap  *keymap;
     struct xkb_state   *state;
 
-    /* Compose (opzionale ma consigliato) */
+    /* Compose support (optional but recommended) */
     struct xkb_compose_table *compose_table;
     struct xkb_compose_state *compose_state;
 } XkbEnv;
 
-/* --- Setup keymap/state --- */
+/* Keymap/state setup */
 
-/* 1) Evdev (RMLVO): creare keymap da rules/model/layout/variant/options */
+/* Evdev (RMLVO): create a keymap from rules/model/layout/variant/options. */
 static MAYBE_UNUSED bool xkb_env_init_from_rmlvo(XkbEnv *env,
-                                    const char *model,   /* es. "pc105"  */
-                                    const char *layout,  /* es. "it"     */
-                                    const char *variant, /* es. NULL     */
-                                    const char *options) /* es. NULL     */
+                                    const char *model,   /* e.g. "pc105" */
+                                    const char *layout,  /* e.g. "it" */
+                                    const char *variant, /* e.g. NULL */
+                                    const char *options) /* e.g. NULL */
 {
     memset(env, 0, sizeof(*env));
 
@@ -46,7 +43,7 @@ static MAYBE_UNUSED bool xkb_env_init_from_rmlvo(XkbEnv *env,
     if (!env->ctx) { fprintf(stderr, "xkb_context_new failed\n"); return false; }
 
     struct xkb_rule_names names = {
-        .rules  = NULL,      /* usa default di sistema (regola "evdev") */
+        .rules  = NULL,      /* Use the system default rules ("evdev"). */
         .model  = model,
         .layout = layout,
         .variant= variant,
@@ -62,10 +59,10 @@ static MAYBE_UNUSED bool xkb_env_init_from_rmlvo(XkbEnv *env,
     return true;
 }
 
-/* 2) Wayland: creare keymap da stringa ricevuta dal compositor */
+/* Wayland: create a keymap from a string received from the compositor. */
 static MAYBE_UNUSED bool xkb_env_init_from_keymap_string(XkbEnv *env,
                                             const char *keymap_string,
-                                            enum xkb_keymap_format fmt /* tipicamente XKB_KEYMAP_FORMAT_TEXT_V1 */)
+                                            enum xkb_keymap_format fmt /* Usually XKB_KEYMAP_FORMAT_TEXT_V1 */)
 {
     memset(env, 0, sizeof(*env));
 
@@ -81,15 +78,14 @@ static MAYBE_UNUSED bool xkb_env_init_from_keymap_string(XkbEnv *env,
     return true;
 }
 
-/* 3) X11: usa xkbcommon-x11 per ottenere keymap/state già pronti
-   (qui lasciamo l'init a carico del chiamante; basta assegnare keymap+state dentro env)
-*/
+/* X11: use xkbcommon-x11 to obtain a keymap and state.
+   The caller initializes them and assigns them to env. */
 
-/* --- Abilitare Compose (dead keys, sequenze) --- */
-static MAYBE_UNUSED bool xkb_env_enable_compose(XkbEnv *env, const char *locale /* es. "it_IT.UTF-8" o NULL per usare env */)
+/* Enable Compose (dead keys and sequences). */
+static MAYBE_UNUSED bool xkb_env_enable_compose(XkbEnv *env, const char *locale /* e.g. "it_IT.UTF-8", or NULL for the process locale */)
 {
     if (!locale) {
-        /* usa il locale di processo; assicurati altrove di aver chiamato setlocale(LC_CTYPE,"") */
+        /* Use the process locale; the caller must first call setlocale(LC_CTYPE, ""). */
         locale = setlocale(LC_CTYPE, NULL);
         if (!locale) locale = "C";
     }
@@ -110,13 +106,13 @@ static MAYBE_UNUSED bool xkb_env_enable_compose(XkbEnv *env, const char *locale 
     return true;
 }
 
-/* --- Aggiornare lo stato in base al backend --- */
+/* Update state for the selected backend. */
 
-/* Evdev: passagli il code "evdev" (KEY_*), e il value (0=release,1=press,2=repeat).
-   Ritorna il keycode nello spazio XKB (evdev+8). */
+/* Evdev: pass an evdev code (KEY_*) and value (0=release, 1=press, 2=repeat).
+   Returns the XKB keycode (evdev+8). */
 static MAYBE_UNUSED xkb_keycode_t xkb_update_from_evdev(XkbEnv *env, uint16_t ev_code, int ev_value)
 {
-    xkb_keycode_t kc = (xkb_keycode_t)(ev_code + 8); /* convenzione storica: +8 */
+    xkb_keycode_t kc = (xkb_keycode_t)(ev_code + 8); /* Historical offset: +8 */
     if (ev_value == 1 || ev_value == 2) { /* press/repeat */
         xkb_state_update_key(env->state, kc, XKB_KEY_DOWN);
     } else if (ev_value == 0) {           /* release */
@@ -125,7 +121,7 @@ static MAYBE_UNUSED xkb_keycode_t xkb_update_from_evdev(XkbEnv *env, uint16_t ev
     return kc;
 }
 
-/* X11/Wayland: applica la "mask" fornita dal server (depressed/latched/locked + group) */
+/* X11/Wayland: apply the server-provided mask (depressed/latched/locked + group). */
 static MAYBE_UNUSED void xkb_update_from_mask(XkbEnv *env,
                                  xkb_mod_mask_t depressed_mods,
                                  xkb_mod_mask_t latched_mods,
@@ -139,13 +135,11 @@ static MAYBE_UNUSED void xkb_update_from_mask(XkbEnv *env,
                           depressed_group, latched_group, locked_group);
 }
 
-/* --- Conversione EV -> UTF-8 (con compose opzionale)
-   value: 1=press, 2=repeat, 0=release
-   Ritorna:
-     - true  se ha prodotto UTF-8 in out (len>0)
-     - false se non c'è testo (tasto non stampabile o release)
-   Se outsym != NULL e NON c'è testo, imposta outsym col keysym (es. frecce, ESC, F1...)
-*/
+/* Convert an event to UTF-8, with optional Compose support.
+   value: 1=press, 2=repeat, 0=release.
+   Returns true when out contains UTF-8 text, false otherwise.
+   If outsym is non-NULL and no text is produced, returns the keysym there
+   (e.g. arrow keys, Escape, F1). */
 static MAYBE_UNUSED bool xkb_ev_to_utf8(XkbEnv *env,
                            xkb_keycode_t kc,
                            int value,
@@ -156,54 +150,54 @@ static MAYBE_UNUSED bool xkb_ev_to_utf8(XkbEnv *env,
     if (!out || outsz == 0) return false;
 
     if (value == 0) {
-        /* release: niente testo */
+        /* Release: no text. */
         out[0] = '\0';
         return false;
     }
 
-    /* Se è un repeat ma la keymap dice "non ripetere", scarta */
+    /* Ignore repeats when the keymap disables them. */
     if (value == 2 && !xkb_keymap_key_repeats(env->keymap, kc)) {
         out[0] = '\0';
         return false;
     }
 
-    /* Ottieni il keysym "logico" in base a keymap+state correnti */
+    /* Get the logical keysym using the current keymap and state. */
     xkb_keysym_t sym = xkb_state_key_get_one_sym(env->state, kc);
 
-    /* Se Compose è attivo, prova la composizione */
+    /* Try composition when Compose is enabled. */
     if (env->compose_state) {
         xkb_compose_state_feed(env->compose_state, sym);
         switch (xkb_compose_state_get_status(env->compose_state)) {
             case XKB_COMPOSE_COMPOSED: {
                 int n = xkb_compose_state_get_utf8(env->compose_state, out, outsz);
                 xkb_compose_state_reset(env->compose_state);
-                return n > 0;
+                return n > 0 && (size_t)n < outsz;
             }
             case XKB_COMPOSE_COMPOSING:
-                /* in attesa del prossimo tasto per completare la sequenza */
+                /* Wait for the next key to complete the sequence. */
                 out[0] = '\0';
                 return false;
             case XKB_COMPOSE_CANCELLED:
                 xkb_compose_state_reset(env->compose_state);
-                /* ricadi alla risoluzione "semplice" */
+                /* Fall back to direct conversion. */
                 break;
             case XKB_COMPOSE_NOTHING:
-                /* nessuna compose: ricadi alla risoluzione "semplice" */
+                /* No compose sequence: fall back to direct conversion. */
                 break;
         }
     }
 
-    /* Risoluzione "semplice": prova a ottenere direttamente UTF-8 */
+    /* Try direct UTF-8 conversion. */
     int n = xkb_state_key_get_utf8(env->state, kc, out, outsz);
-    if (n > 0) return true;
+    if (n > 0 && (size_t)n < outsz) return true;
 
-    /* Non c'è testo: restituisci almeno il keysym al chiamante */
+    /* No text: return the keysym to the caller. */
     if (outsym) *outsym = sym;
     out[0] = '\0';
     return false;
 }
 
-/* --- Cleanup --- */
+/* Cleanup */
 static MAYBE_UNUSED void xkb_env_destroy(XkbEnv *env)
 {
     if (!env) return;
@@ -215,6 +209,4 @@ static MAYBE_UNUSED void xkb_env_destroy(XkbEnv *env)
     memset(env, 0, sizeof(*env));
 }
 
-/* ==========================
-   Fine mini-libreria
-   ========================== */
+/* End of XKB helpers */

@@ -1,15 +1,20 @@
 #include "fermate.h"
-
-void get_max_block_time(int ac, char *av[])
+#include <errno.h>
+#include <limits.h>
+#include <stdlib.h>
+#include <ctype.h>
+bool parse_duration(const char *text, int *seconds)
 {
-    g_max_block_time = DEFAULT_BLOCK_TIME;
-    if (ac <= 1)
-        return ;
-    int block_time = atoi(av[1]);
-    if (block_time == 0)
-    {
-        fprintf(stderr, RED "invalid argment, not a number. Default time set\n" RES);
-        return ;
-    }
-    g_max_block_time = block_time;
+    char *end;
+    if (!text || !*text)
+        return (false);
+    for (const char *p = text; *p; ++p)
+        if (!isdigit((unsigned char)*p))
+            return (false);
+    errno = 0;
+    long value = strtol(text, &end, 10);
+    if (errno || *end || value <= 0 || value > INT_MAX)
+        return (false);
+    *seconds = (int)value;
+    return (true);
 }
