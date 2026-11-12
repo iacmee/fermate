@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <linux/input.h>
 #define DEFAULT_BLOCK_TIME 300
+#define DEFAULT_CHALLENG_LEN 32
 #define USR_BUF_SIZE 1024
 #define EMERGENCY_EXIT "exit"
 #ifndef DIR_TO_WATCH

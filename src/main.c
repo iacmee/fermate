@@ -140,7 +140,7 @@ int main(int argc, char **argv)
         goto cleanup;
     if (!xkb_env_enable_compose(&env, NULL))
         goto cleanup;
-    if (challenge && !(random = generate_random_string(12, CH_ASCII_ALPHA | CH_ASCII_NUMBER)))
+    if (challenge && !(random = generate_random_string(DEFAULT_CHALLENG_LEN, CH_ASCII_ALPHA | CH_ASCII_NUMBER)))
         goto cleanup;
     const char *target = random;
     watcher = watch_devices();

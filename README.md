@@ -5,6 +5,23 @@ those connected while it is running. Devices are released when the timer expires
 or when you enter the random unlock string, if `--challenge` is enabled.
 This is not an authenticated screen lock.
 
+“Fermate” is Romano (the dialect of Rome) for “stop” or “take a break.”
+
+## Why this project exists
+
+I built Fermate because I sometimes spend too much time at the computer,
+programming without taking breaks. It forces me to stop for a while by blocking
+the keyboard and mouse until the timer expires, so I cannot just keep coding
+instead of taking a break.
+
+For emergencies, `--challenge` provides a random string that can be typed to
+unlock early. It adds a deliberate step before returning to the computer.
+The simple `exit` command is reserved for the test build so it does not become
+an easy shortcut during normal use.
+
+Fermate is a personal tool for taking breaks, not a security boundary: it does
+not prevent someone determined to stop the process or restart the machine.
+
 ## Build and run
 
 Requires a C compiler, Make, Linux headers, libxkbcommon development headers and
@@ -23,7 +40,7 @@ The duration is a positive number of seconds, up to `2147483647`; the default is
 does not require privileges. Running requires access to input device nodes and
 permission to grab them exclusively, usually through root.
 
-`--challenge` displays a random 12-character string of ASCII letters and digits.
+`--challenge` displays a random 32-character string of ASCII letters and digits.
 Type it and press Enter to unlock early. Without this option, wait for the timer.
 The `exit` command is available only in the test build.
 
@@ -70,3 +87,32 @@ multiple keyboards, removal and reconnection, modifiers, compose sequences, and
 layouts. Hotplug detection follows the kernel notification, leaving a short
 interval between connection and grabbing. Time spent suspended does not count
 towards the timer.
+
+## Keep the screen awake on GNOME
+
+Because Fermate grabs input events, the desktop does not receive your keyboard
+and mouse activity. It may therefore dim or turn off the screen, or lock the
+session, according to its inactivity settings, even while you are typing into
+Fermate.
+
+To prevent idle behavior during a run on GNOME, launch it from your desktop
+terminal with:
+
+```sh
+gnome-session-inhibit --inhibit idle sudo ./main 300 --challenge
+```
+
+For the test build:
+
+```sh
+gnome-session-inhibit --inhibit idle sudo ./main-test 30 --challenge
+```
+
+Keep `gnome-session-inhibit` outside `sudo` so it runs as your desktop user.
+It requests idle inhibition while Fermate is running and releases it when the
+command exits, without changing desktop settings. Fermate itself does not
+manage screen power or create an inhibitor; running `sudo ./main` directly
+keeps the desktop's normal inactivity behavior.
+
+This optional workaround requires `gnome-session-inhibit` (provided by
+`gnome-session-bin` on Ubuntu). See the [GNOME documentation](https://gnome.pages.gitlab.gnome.org/gnome-session/re02.html).
